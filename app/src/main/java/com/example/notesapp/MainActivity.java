@@ -2,6 +2,7 @@ package com.example.notesapp;
 
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.graphics.Canvas;
 import android.os.Bundle;
 
 import com.firebase.ui.auth.AuthUI;
@@ -16,6 +17,7 @@ import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.auth.GetTokenResult;
 import com.google.firebase.firestore.DocumentReference;
+import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.Query;
 
@@ -23,7 +25,9 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.DividerItemDecoration;
+import androidx.recyclerview.widget.ItemTouchHelper;
 import androidx.recyclerview.widget.RecyclerView;
 
 import android.util.Log;
@@ -37,7 +41,9 @@ import android.widget.Toast;
 
 import java.util.Date;
 
-public class MainActivity extends AppCompatActivity implements FirebaseAuth.AuthStateListener {
+import it.xabaras.android.recyclerview.swipedecorator.RecyclerViewSwipeDecorator;
+
+public class MainActivity extends AppCompatActivity implements FirebaseAuth.AuthStateListener, MemosRecyclerAdapter.MemoListener {
 
     private static final String TAG = "MainActivity";
     RecyclerView recyclerView;
@@ -51,6 +57,7 @@ public class MainActivity extends AppCompatActivity implements FirebaseAuth.Auth
         setSupportActionBar(toolbar);
 
         recyclerView = findViewById(R.id.recyclerView);
+        // 区切り線
         recyclerView.addItemDecoration(new DividerItemDecoration(this, DividerItemDecoration.VERTICAL));
 
         FloatingActionButton fab = findViewById(R.id.fab);
@@ -143,7 +150,7 @@ public class MainActivity extends AppCompatActivity implements FirebaseAuth.Auth
     protected void onStop() {
         super.onStop();
         FirebaseAuth.getInstance().removeAuthStateListener(this);
-        if(memosRecyclerAdapter != null){
+        if (memosRecyclerAdapter != null) {
             memosRecyclerAdapter.stopListening();
         }
     }
@@ -154,21 +161,131 @@ public class MainActivity extends AppCompatActivity implements FirebaseAuth.Auth
             startLoginActivity();
             return;
         }
-       initRecyclerView(firebaseAuth.getCurrentUser());
+        initRecyclerView(firebaseAuth.getCurrentUser());
     }
 
-    private void initRecyclerView(FirebaseUser user){
+    private void initRecyclerView(FirebaseUser user) {
         Query query = FirebaseFirestore.getInstance()
                 .collection("memos")
-                .whereEqualTo("userId", user.getUid());
+                .whereEqualTo("userId", user.getUid())
+                .orderBy("completed", Query.Direction.ASCENDING)
+                .orderBy("created", Query.Direction.ASCENDING);
 
         FirestoreRecyclerOptions<Memo> options = new FirestoreRecyclerOptions.Builder<Memo>()
                 .setQuery(query, Memo.class)
                 .build();
 
-        memosRecyclerAdapter = new MemosRecyclerAdapter(options);
+        memosRecyclerAdapter = new MemosRecyclerAdapter(options, this);
         recyclerView.setAdapter(memosRecyclerAdapter);
 
         memosRecyclerAdapter.startListening();
+
+        ItemTouchHelper itemTouchHelper = new ItemTouchHelper(simpleCallback);
+        itemTouchHelper.attachToRecyclerView(recyclerView);
     }
+
+    ItemTouchHelper.SimpleCallback simpleCallback = new ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
+        @Override
+        public boolean onMove(@NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder viewHolder, @NonNull RecyclerView.ViewHolder target) {
+            return false;
+        }
+
+        @Override
+        public void onSwiped(@NonNull RecyclerView.ViewHolder viewHolder, int direction) {
+            if (direction == ItemTouchHelper.LEFT) {
+                MemosRecyclerAdapter.MemoViewHolder memoViewHolder = (MemosRecyclerAdapter.MemoViewHolder) viewHolder;
+                memoViewHolder.deleteMemo();
+            }
+        }
+
+        @Override
+        public void onChildDraw(@NonNull Canvas c, @NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder viewHolder, float dX, float dY, int actionState, boolean isCurrentlyActive) {
+            new RecyclerViewSwipeDecorator.Builder(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    .addBackgroundColor(ContextCompat.getColor(MainActivity.this, R.color.colorAccent))
+                    .addActionIcon(R.drawable.ic_delete)
+                    .create()
+                    .decorate();
+
+            super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive);
+        }
+    };
+
+    @Override
+    public void handleCheckChanged(boolean isChecked, DocumentSnapshot snapshot) {
+        Log.d(TAG, "handleCheckChanged: " + isChecked);
+        snapshot.getReference().update("completed", isChecked)
+                .addOnSuccessListener(new OnSuccessListener<Void>() {
+                    @Override
+                    public void onSuccess(Void aVoid) {
+                        Log.d(TAG, "onSuccess: boolean更新成功");
+                    }
+                })
+                .addOnFailureListener(new OnFailureListener() {
+                    @Override
+                    public void onFailure(@NonNull Exception e) {
+                        Log.d(TAG, "onFailure: " + e.getLocalizedMessage());
+                    }
+                });
+    }
+
+    @Override
+    public void handleEditMemo(DocumentSnapshot snapshot) {
+
+        Memo memo = snapshot.toObject(Memo.class);
+
+        EditText editText = new EditText(this);
+        editText.setText(memo.getText());
+        editText.setSelection(memo.getText().length());
+
+        new AlertDialog.Builder(this)
+                .setTitle("メモの書き換え")
+                .setView(editText)
+                .setPositiveButton("書き換える", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        String newText = editText.getText().toString();
+                        memo.setText(newText);
+                        snapshot.getReference().set(memo)
+                                .addOnSuccessListener(new OnSuccessListener<Void>() {
+                                    @Override
+                                    public void onSuccess(Void aVoid) {
+                                        Log.d(TAG, "onSuccess: メモ内容更新成功");
+                                    }
+                                })
+                                .addOnFailureListener(new OnFailureListener() {
+                                    @Override
+                                    public void onFailure(@NonNull Exception e) {
+                                        Log.d(TAG, "onFailure: " + e.getLocalizedMessage());
+                                    }
+                                });
+
+                    }
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
+    }
+
+    @Override
+    public void handleDeleteItem(DocumentSnapshot snapshot) {
+        final DocumentReference documentReference = snapshot.getReference();
+        final Memo note = snapshot.toObject(Memo.class);
+
+        documentReference.delete()
+                .addOnSuccessListener(new OnSuccessListener<Void>() {
+                    @Override
+                    public void onSuccess(Void aVoid) {
+                        Log.d(TAG, "onSuccess: メモの削除完了");
+                    }
+                });
+
+        Snackbar.make(recyclerView, "削除完了", Snackbar.LENGTH_LONG)
+                .setAction("キャンセル", new View.OnClickListener() {
+                    @Override
+                    public void onClick(View view) {
+                        documentReference.set(note);
+                    }
+                })
+                .show();
+    }
+
 }
